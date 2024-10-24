@@ -198,40 +198,42 @@ def time_check(df) -> pd.Series:
         pd.Series: return a boolean series
     """
     # Write your logic here
-    # Combine date and time into a single datetime column
-    df['start_timestamp'] = pd.to_datetime(df['startDay'] + ' ' + df['startTime'])
-    df['end_timestamp'] = pd.to_datetime(df['endDay'] + ' ' + df['endTime'])
-    
-    # Group by (id, id_2)
+    # Normalize day names to title case
+    df['startDay'] = df['startDay'].str.title()
+    df['endDay'] = df['endDay'].str.title()
+
+    # Combine start and end times into a single datetime for easier comparisons
+    df['start_datetime'] = pd.to_datetime(df['startDay'] + ' ' + df['startTime'], format='%A %H:%M:%S', errors='coerce')
+    df['end_datetime'] = pd.to_datetime(df['endDay'] + ' ' + df['endTime'], format='%A %H:%M:%S', errors='coerce')
+
+    # Check for any NaT values after conversion
+    if df['start_datetime'].isnull().any() or df['end_datetime'].isnull().any():
+        raise ValueError("One or more timestamps could not be parsed correctly.")
+
+    # Create a multi-index based on (id, id_2)
     grouped = df.groupby(['id', 'id_2'])
 
-    def check_completeness(group):
-        # Get unique days of the week from start timestamps
-        group['start_day_of_week'] = group['start_timestamp'].dt.day_name()
-        unique_days = group['start_day_of_week'].unique()
+    results = []
 
-        # Check for all 7 days
-        all_days = {'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'}
-        if not all_days.issubset(unique_days):
-            return False
-        
-        # Check for 24-hour coverage
-        for day in all_days:
-            day_group = group[group['start_day_of_week'] == day]
-            if day_group.empty:
-                return False
-            
-            start_min = day_group['start_timestamp'].min()
-            end_max = day_group['end_timestamp'].max()
-            
-            # Check if the day covers from 12:00 AM to 11:59:59 PM
-            if not (start_min.normalize() == start_min and end_max.normalize() == end_max + pd.Timedelta(seconds=86399)):
-                return False
-            
-        return True
+    for (id_value, id_2_value), group in grouped:
+        # Get the unique days and check if all 7 days are covered
+        unique_days = group['startDay'].unique()
+        all_days_covered = len(unique_days) == 7
 
-    # Apply completeness check
-    result = grouped.apply(check_completeness)
+        # Check the time coverage
+        time_range_covered = (group['start_datetime'].min() <= group['end_datetime'].max() and
+                              group['start_datetime'].min().time() <= time(0, 0) and
+                              group['end_datetime'].max().time() >= time(23, 59, 59))
+
+        # Append the result for the (id, id_2) pair
+        results.append(((id_value, id_2_value), all_days_covered and time_range_covered))
+
+    # Convert results to a Series with a MultiIndex
+    result_series = pd.Series(dict(results), name='complete_timestamps')
     
-    # Convert the result to a boolean Series with MultiIndex
-    return result
+    return result_series
+
+# Example usage:
+# df = pd.read_csv('dataset-1.csv')  # Load your dataset
+# completeness_check = time_check(df)
+# print(completeness_check)
